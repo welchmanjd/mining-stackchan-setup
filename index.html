@@ -475,16 +475,17 @@
         lastCfg.duco_user = ducoUser;
         sent++;
       }
-      if (!same(azRegion, lastCfg.az_region)) {
+      if (azRegion) {
         await writeLine(`SET az_region ${azRegion}`);
         lastCfg.az_region = azRegion;
         sent++;
       }
-      if (!same(azVoice, lastCfg.az_voice)) {
+      if (azVoice) {
         await writeLine(`SET az_voice ${azVoice}`);
         lastCfg.az_voice = azVoice;
         sent++;
       }
+
 
       // secrets：入力があるときだけ送る（比較はしない、ログは伏せる）
     const flashHint = (id, text, revertText = "(set)", ms = 4000) => {
