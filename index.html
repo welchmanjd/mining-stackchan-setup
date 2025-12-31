@@ -103,10 +103,29 @@
       <label style="width:120px;">Voice</label>
       <input id="azVoice" type="text" style="flex:1;" />
     </div>
+        <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
+      <label style="width:120px;">Custom Host</label>
+      <input id="azEndpoint" type="text" style="flex:1;"
+             placeholder="(optional) my-speech-app / my-speech-app.cognitiveservices.azure.com / https://..." />
+    </div>
     <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
       <label style="width:120px;">Key</label>
       <input id="azKey" type="password" style="flex:1;" placeholder="(leave blank to keep current)" />
       <span id="azKeyHint" style="color:#666; font-size:12px;"></span>
+    </div>
+  </fieldset>
+
+  <fieldset style="border:1px solid #ddd; padding:8px; margin:8px 0;">
+    <legend>Device</legend>
+    <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
+      <label style="width:120px;">Display sleep (sec)</label>
+      <input id="displaySleepS" type="number" style="flex:1;" min="0" step="1"
+             placeholder="(e.g. 180)" />
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
+      <label style="width:120px;">Attention text</label>
+      <input id="attentionText" type="text" style="flex:1;"
+             placeholder="(e.g. こんにちは)" />
     </div>
   </fieldset>
 
@@ -259,6 +278,9 @@
                 $("ducoUser").value = cfg.duco_user ?? "";
                 $("azRegion").value = cfg.az_region ?? "";
                 $("azVoice").value  = cfg.az_voice ?? "";
+                $("azEndpoint").value = cfg.az_endpoint ?? "";
+                $("displaySleepS").value = (cfg.display_sleep_s ?? "");
+                $("attentionText").value = cfg.attention_text ?? "";
 
                 // secrets は内容は表示しない（set済みかだけ）
                 $("wifiPass").value = "";
@@ -451,10 +473,13 @@
       const azRegion = ($("azRegion").value ?? "").trim();
       const azVoice  = ($("azVoice").value ?? "").trim();
       const azKey    = ($("azKey").value ?? "");         // 空なら送らない
+      const azEndpoint    = ($("azEndpoint").value ?? "").trim();
+      const displaySleepS = ($("displaySleepS").value ?? "").trim();
+      const attentionText = ($("attentionText").value ?? "").trim();
 
       // 行プロトコル安全：改行は禁止
       const hasNL = (s) => /[\r\n]/.test(s);
-      if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azKey].some(hasNL)) {
+      if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azKey, azEndpoint, displaySleepS, attentionText].some(hasNL)) {
         $("cfgStatus").textContent = "ERROR: Newline is not allowed in values.";
         return;
       }
@@ -483,6 +508,33 @@
       if (azVoice) {
         await writeLine(`SET az_voice ${azVoice}`);
         lastCfg.az_voice = azVoice;
+        sent++;
+      }
+      // Azure custom endpoint/host (optional)
+      if (azEndpoint && !same(azEndpoint, lastCfg.az_endpoint)) {
+        await writeLine(`SET az_endpoint ${azEndpoint}`);
+        lastCfg.az_endpoint = azEndpoint;
+        sent++;
+      }
+
+      // Display sleep seconds (optional; numeric)
+      if (displaySleepS) {
+        const sec = parseInt(displaySleepS, 10);
+        if (!Number.isFinite(sec) || sec < 0) {
+          $("cfgStatus").textContent = "ERROR: Display sleep must be a non-negative integer.";
+          return;
+        }
+        if (!same(String(sec), lastCfg.display_sleep_s)) {
+          await writeLine(`SET display_sleep_s ${sec}`);
+          lastCfg.display_sleep_s = sec;
+          sent++;
+        }
+      }
+
+      // Attention text (optional)
+      if (attentionText && !same(attentionText, lastCfg.attention_text)) {
+        await writeLine(`SET attention_text ${attentionText}`);
+        lastCfg.attention_text = attentionText;
         sent++;
       }
 
