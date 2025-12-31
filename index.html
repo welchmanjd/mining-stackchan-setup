@@ -511,7 +511,12 @@
         sent++;
       }
       // Azure custom endpoint/host (optional)
-      if (azEndpoint && !same(azEndpoint, lastCfg.az_endpoint)) {
+      // - If empty and it was set before, send "-" as a clear marker
+      if (!azEndpoint && (lastCfg.az_endpoint ?? "").trim().length) {
+        await writeLine(`SET az_endpoint -`);
+        lastCfg.az_endpoint = "";
+        sent++;
+      } else if (azEndpoint && !same(azEndpoint, lastCfg.az_endpoint)) {
         await writeLine(`SET az_endpoint ${azEndpoint}`);
         lastCfg.az_endpoint = azEndpoint;
         sent++;
