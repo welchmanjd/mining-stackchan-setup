@@ -29,6 +29,17 @@
     .small-note { font-size:12px; color:#555; }
     .status-text { font-weight:700; }
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
+    .banner {
+      display:none;
+      margin-top:10px;
+      padding:10px;
+      border:1px solid #8ac;
+      border-radius:8px;
+      background:#eef7ff;
+      color:#123;
+      font-size:13px;
+    }
+    .banner b { margin-right:6px; }
   </style>
 </head>
 <body>
@@ -38,6 +49,12 @@
     <h2 class="section-title">① ファームウェアのインストール</h2>
     <p>Chrome / Edge でUSB接続して「INSTALL」を押してください。</p>
     <esp-web-install-button id="installBtn" manifest="manifest.json"></esp-web-install-button>
+
+    <div id="installDoneBanner" class="banner">
+      <b>✅ インストール完了</b>
+      ②へ移動しました。必要なら <b>Connect</b> を押して接続してください。（端末が再起動するので数秒待つと安定します）
+    </div>
+
     <p class="small-note">INSTALL後に本体が再起動します。数秒待ってから②の Connect を押してください。</p>
   </section>
 
@@ -48,6 +65,7 @@
       <button id="btnConnect">Connect</button>
       <button id="btnDisconnect" disabled>Disconnect</button>
       <span id="devInfo" class="hint">-</span>
+      <span id="infoText" class="hint"></span>
     </div>
     <p class="small-note">接続が完了すると③が使えます。</p>
   </section>
@@ -297,6 +315,39 @@
       if (!cfg.attention_text) cfg.attention_text = DEFAULT_ATTENTION;
     }
 
+    // --- After-install: advance to Step 2 (best-effort) ---
+    const STORAGE_KEY_INSTALLED = "msc_installed_v1";
+
+    const gotoStep2 = () => {
+      $("secConnect")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setTimeout(() => $("btnConnect")?.focus?.(), 150);
+      const b = $("installDoneBanner");
+      if (b) b.style.display = "block";
+    };
+
+    const markInstallDone = (src = "", { autoConnect = false } = {}) => {
+      if (!installDone) {
+        installDone = true;
+        try { localStorage.setItem(STORAGE_KEY_INSTALLED, "1"); } catch {}
+        setSectionState();
+      }
+      logSetup(`Install done${src ? " (" + src + ")" : ""}.`);
+      gotoStep2();
+
+      // Auto-connect is constrained by browser "user gesture" rules.
+      // When called from the dialog's Next click, it *may* work. Otherwise user can click manually.
+      if (autoConnect) {
+        try { $("btnConnect")?.click(); } catch {}
+      }
+    };
+
+    // Restore state (in case user reloads after flashing)
+    try {
+      if (localStorage.getItem(STORAGE_KEY_INSTALLED) === "1") {
+        installDone = true;
+      }
+    } catch {}
+
     async function readLoop() {
       const decoder = new TextDecoder();
       let buf = "";
@@ -425,6 +476,7 @@
       port = null;
       setUi(false);
       $("devInfo").textContent = "-";
+      $("infoText").textContent = "";
     }
 
     async function handleSave(doSave = true) {
@@ -634,10 +686,62 @@
       $("azKey").type    = t;
     });
 
-    $("installBtn")?.addEventListener("install-success", () => {
-      installDone = true;
-      setSectionState();
+    // --- install hooks (robust) ---
+    const installBtn = $("installBtn");
+
+    // 1) If install-success fires, great
+    installBtn?.addEventListener("install-success", () => markInstallDone("install-success"));
+    document.addEventListener("install-success", () => markInstallDone("install-success(doc)"), true);
+
+    // 2) Fallback: state-changed (event name exists across several esp-web-tools versions)
+    // We treat any terminal-ish state as success-ish.
+    installBtn?.addEventListener("state-changed", (e) => {
+      const s = String(e?.detail?.state ?? e?.detail ?? "").toLowerCase();
+      if (s.includes("done") || s.includes("success") || s.includes("complete") || s.includes("finished")) {
+        markInstallDone("state-changed:" + s);
+      }
     });
+
+    // 3) Best-effort: hook "Next" click inside the ESP Web Tools dialog to keep user-gesture
+    const hookDialogNext = (dlg) => {
+      if (!dlg || dlg.__mscHooked) return;
+      dlg.__mscHooked = true;
+
+      const tryBind = () => {
+        const sr = dlg.shadowRoot;
+        if (!sr) return false;
+
+        const btns = Array.from(sr.querySelectorAll("button"));
+        const nextBtn = btns.find((b) => /next/i.test((b.textContent || "").trim()));
+        if (!nextBtn) return false;
+
+        nextBtn.addEventListener(
+          "click",
+          () => markInstallDone("Next", { autoConnect: true }),
+          { once: true }
+        );
+        return true;
+      };
+
+      if (tryBind()) return;
+
+      let tries = 0;
+      const t = setInterval(() => {
+        tries++;
+        if (tryBind() || tries > 25) clearInterval(t);
+      }, 200);
+    };
+
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) {
+          if (!(n instanceof HTMLElement)) continue;
+          if (n.tagName?.toLowerCase() === "ewt-install-dialog") hookDialogNext(n);
+          const dlg = n.querySelector?.("ewt-install-dialog");
+          if (dlg) hookDialogNext(dlg);
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
 
     // init defaults
     setUi(false);
@@ -645,7 +749,14 @@
     $("azVoice").value = DEFAULT_VOICE;
     $("displaySleep").value = DEFAULT_SLEEP;
     $("attentionText").value = DEFAULT_ATTENTION;
+
+    // Apply restored install state
     setSectionState();
+    if (installDone) {
+      // if already installed (localStorage), make Step2 available and show banner once
+      gotoStep2();
+    }
+
     logSetup("Open this page on HTTPS (GitHub Pages) or on localhost for testing.");
   </script>
 </body>
