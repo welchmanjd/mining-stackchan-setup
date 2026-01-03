@@ -181,8 +181,20 @@
         <label for="spkVolume">Volume (0-255)</label>
         <input id="spkVolume" type="number" min="0" max="255" step="1" />
 
+        <label for="cpuMhz">CPU clock (MHz) <span class="muted">（80/160/240）</span></label>
+        <input id="cpuMhz" type="number" min="80" max="240" step="1" />
+
         <label for="attentionText">Attention text</label>
         <input id="attentionText" type="text" />
+
+
+        <div style="grid-column:1/-1; margin-top:10px;"><b>Speech</b> <span class="muted">（セリフ）</span></div>
+
+        <label for="shareAcceptedText">Share accepted</label>
+        <input id="shareAcceptedText" type="text" placeholder="(空なら現状維持)" />
+
+        <label for="helloText">Hello</label>
+        <input id="helloText" type="text" placeholder="(空なら現状維持)" />
       </div>
 
       <div class="actions3" style="margin-top:14px;">
@@ -240,11 +252,22 @@
     const $ = (id) => document.getElementById(id);
 
     const DEFAULTS = {
+      // config_private.sample.h に合わせる
+      azRegion: "japaneast",
       azVoice: "ja-JP-AoiNeural",
       displaySleepS: 600,
-      attentionText: "こんにちは",
+      attentionText: "Hi there!",
       spkVolume: 160, // 0-255
+
+      // ★追加：CPU動作周波数（MHz）: 80/160/240
+      cpuMhz: 240,
+
+      // ★追加：セリフ（フォーム未設定/空のときの表示用）
+      shareAcceptedText: "掘れたよ！",
+      helloText: "こんにちはマイニングスタックチャンです",
     };
+
+
 
 
 // --- wizard state (session-only) ---
@@ -494,12 +517,18 @@ const wizard = {
                 // Fill fields (keep defaults if empty)
                 $("wifiSsid").value = cfg.wifi_ssid ?? "";
                 $("ducoUser").value = cfg.duco_user ?? "";
-                $("azRegion").value = cfg.az_region ?? "";
+
+                const r = String(cfg.az_region ?? "").trim();
+                $("azRegion").value = r.length ? r : DEFAULTS.azRegion;
+
 
                 const v = String(cfg.az_voice ?? "").trim();
                 $("azVoice").value = v.length ? v : DEFAULTS.azVoice;
 
-                $("azEndpoint").value = cfg.az_endpoint ?? "";
+                let ep = String(cfg.az_endpoint ?? "").trim();
+                if (ep === "-" || ep.toLowerCase() === "none") ep = "";
+                cfg.az_endpoint = ep;           // ★後段の比較/保存判定もブレないように正規化
+                $("azEndpoint").value = ep;
 
                 const ds = (cfg.display_sleep_s ?? "");
                 $("displaySleepS").value = (ds === "" || ds === null || ds === undefined) ? DEFAULTS.displaySleepS : ds;
@@ -507,8 +536,19 @@ const wizard = {
                 const at = String(cfg.attention_text ?? "").trim();
                 $("attentionText").value = at.length ? at : DEFAULTS.attentionText;
 
+                // ★追加：セリフ
+                const sa = String(cfg.share_accepted_text ?? "").trim();
+                $("shareAcceptedText").value = sa.length ? sa : DEFAULTS.shareAcceptedText;
+
+                const ht = String(cfg.hello_text ?? "").trim();
+                $("helloText").value = ht.length ? ht : DEFAULTS.helloText;
+
                 const vol = (cfg.spk_volume ?? cfg.speaker_volume ?? cfg.volume ?? "");
                 $("spkVolume").value = (vol === "" || vol === null || vol === undefined) ? DEFAULTS.spkVolume : vol;
+
+                // ★追加：CPU MHz
+                const cpu = (cfg.cpu_mhz ?? "");
+                $("cpuMhz").value = (cpu === "" || cpu === null || cpu === undefined) ? DEFAULTS.cpuMhz : cpu;
 
                 // secrets: clear input + show set state
                 $("wifiPass").value = "";
@@ -708,19 +748,25 @@ const wizard = {
 
         // inputs
         const ssid = String($("wifiSsid").value ?? "").trim();
-        const pass = String($("wifiPass").value ?? "");
+        const pass = String($("wifiPass").value ?? "").trim();
         const ducoUser = String($("ducoUser").value ?? "").trim();
-        const ducoKey = String($("ducoKey").value ?? "");
+        const ducoKey = String($("ducoKey").value ?? "").trim();
         const azRegion = String($("azRegion").value ?? "").trim();
         const azVoice = String($("azVoice").value ?? "").trim();
         const azEndpoint = String($("azEndpoint").value ?? "").trim();
-        const azKey = String($("azKey").value ?? "");
+        const azKey = String($("azKey").value ?? "").trim();
         const displaySleepS = String($("displaySleepS").value ?? "").trim();
         const attentionText = String($("attentionText").value ?? "").trim();
         const spkVolume = String($("spkVolume").value ?? "").trim();
+        const cpuMhz = String($("cpuMhz").value ?? "").trim(); // ★追加
+
+        // ★追加：セリフ
+        const shareAcceptedText = String($("shareAcceptedText").value ?? "").trim();
+        const helloText = String($("helloText").value ?? "").trim();
+
 
         const hasNL = (s) => /[\r\n]/.test(s);
-        if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azEndpoint, azKey, displaySleepS, attentionText, spkVolume].some(hasNL)) {
+        if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azEndpoint, azKey, displaySleepS, attentionText, spkVolume, cpuMhz, shareAcceptedText, helloText].some(hasNL)) {
           $("resultText").textContent = "ERROR: 改行は使えません";
           return;
         }
@@ -732,18 +778,19 @@ const wizard = {
         if (!same(ssid, cfg.wifi_ssid)) { await writeLine(`SET wifi_ssid ${ssid}`); cfg.wifi_ssid = ssid; sent++; }
         if (!same(ducoUser, cfg.duco_user)) { await writeLine(`SET duco_user ${ducoUser}`); cfg.duco_user = ducoUser; sent++; }
 
-        if (azRegion && !same(azRegion, cfg.az_region)) { await writeLine(`SET az_region ${azRegion}`); cfg.az_region = azRegion; sent++; }
-        if (azVoice && !same(azVoice, cfg.az_voice)) { await writeLine(`SET az_voice ${azVoice}`); cfg.az_voice = azVoice; sent++; }
+        if (azRegion && !same(azRegion, cfg.az_region)) { await writeLine(`SET az_speech_region ${azRegion}`); cfg.az_region = azRegion; sent++; }
+        if (azVoice && !same(azVoice, cfg.az_voice))   { await writeLine(`SET az_tts_voice ${azVoice}`);      cfg.az_voice  = azVoice;  sent++; }
 
         if (!azEndpoint && String(cfg.az_endpoint ?? "").trim().length) {
-          await writeLine("SET az_endpoint -");
+          await writeLine("SET az_custom_subdomain -");
           cfg.az_endpoint = "";
           sent++;
         } else if (azEndpoint && !same(azEndpoint, cfg.az_endpoint)) {
-          await writeLine(`SET az_endpoint ${azEndpoint}`);
+          await writeLine(`SET az_custom_subdomain ${azEndpoint}`);
           cfg.az_endpoint = azEndpoint;
           sent++;
         }
+
 
         if (displaySleepS.length) {
           const sec = parseInt(displaySleepS, 10);
@@ -771,9 +818,36 @@ const wizard = {
           }
         }
 
+        // ★追加：CPU MHz（80/160/240のみ）
+        if (cpuMhz.length) {
+          const mhz = parseInt(cpuMhz, 10);
+          if (![80, 160, 240].includes(mhz)) {
+            $("resultText").textContent = "ERROR: CPU clock は 80 / 160 / 240 のみ";
+            return;
+          }
+          if (!same(String(mhz), cfg.cpu_mhz)) {
+            await writeLine(`SET cpu_mhz ${mhz}`);
+            cfg.cpu_mhz = mhz;
+            sent++;
+          }
+        }
+
         if (attentionText && !same(attentionText, cfg.attention_text)) {
           await writeLine(`SET attention_text ${attentionText}`);
           cfg.attention_text = attentionText;
+          sent++;
+        }
+
+        // ★追加：セリフ（空なら現状維持）
+        if (shareAcceptedText && !same(shareAcceptedText, cfg.share_accepted_text)) {
+          await writeLine(`SET share_accepted_text ${shareAcceptedText}`);
+          cfg.share_accepted_text = shareAcceptedText;
+          sent++;
+        }
+
+        if (helloText && !same(helloText, cfg.hello_text)) {
+          await writeLine(`SET hello_text ${helloText}`);
+          cfg.hello_text = helloText;
           sent++;
         }
 
@@ -786,22 +860,24 @@ const wizard = {
           flashHint("wifiPassHint", "Applied ✓", "(set)");
           sent++;
         }
+        
         if (ducoKey) {
-          await writeLine(`SET duco_key ${ducoKey}`, "SET duco_key ********");
+          await writeLine(`SET duco_miner_key ${ducoKey}`, "SET duco_miner_key ********");
           $("ducoKey").value = "";
-          dirty.duco_key = true;
-          cfg.duco_key_set = true;
+          dirty.duco_key = true;        // ここは内部管理なのでそのままでOK
+          cfg.duco_key_set = true;      // GET CFG 側のフラグも短いままなのでこれでOK
           flashHint("ducoKeyHint", "Applied ✓", "(set)");
           sent++;
         }
         if (azKey) {
-          await writeLine(`SET az_key ${azKey}`, "SET az_key ********");
+          await writeLine(`SET az_speech_key ${azKey}`, "SET az_speech_key ********");
           $("azKey").value = "";
           dirty.az_key = true;
           cfg.az_key_set = true;
           flashHint("azKeyHint", "Applied ✓", "(set)");
           sent++;
         }
+
 
         if (sent === 0) {
           $("resultText").textContent = "変更なし";
@@ -912,10 +988,17 @@ const wizard = {
 
 
 // Init defaults
+    $("azRegion").value = DEFAULTS.azRegion;
     $("azVoice").value = DEFAULTS.azVoice;
     $("displaySleepS").value = DEFAULTS.displaySleepS;
     $("attentionText").value = DEFAULTS.attentionText;
     $("spkVolume").value = DEFAULTS.spkVolume;
+    $("cpuMhz").value = DEFAULTS.cpuMhz;
+
+    // セリフも初期表示（Get Config前でも見える）
+    $("shareAcceptedText").value = DEFAULTS.shareAcceptedText;
+    $("helloText").value = DEFAULTS.helloText;
+
 
     $("installStatus").textContent = "未インストール";
     observeEwtDialogs();
