@@ -45,6 +45,44 @@
       color: #777;
       font-size: 12px;
     }
+
+    /* Save→Reboot 導線強化 */
+    .btn-emph {
+      font-weight: 700;
+      background: #ffe08a;
+      border-color: #d7a400;
+    }
+    .pulse {
+      animation: pulseGlow 1.2s ease-in-out infinite;
+    }
+    @keyframes pulseGlow {
+      0%   { box-shadow: 0 0 0 0 rgba(255,170,0,0.0); }
+      50%  { box-shadow: 0 0 0 4px rgba(255,170,0,0.35); }
+      100% { box-shadow: 0 0 0 0 rgba(255,170,0,0.0); }
+    }
+
+    /* STEP3 actions layout */
+    .actions3 {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .actions3 .left {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .actions3 .right {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-left: auto; /* 右寄せ */
+    }
+
 </style>
 </head>
 <body>
@@ -82,12 +120,14 @@
   <section class="card step" id="step2">
     <div class="guard">
       <h2>② 接続</h2>
-      <div class="row" style="margin-bottom:10px;">
-        <div class="status">Status: <b id="statusText">Disconnected</b></div>
-        <button class="btn" id="btnConnect">Connect</button>
-        <button class="btn" id="btnDisconnect" disabled>Disconnect</button>
-        <button class="btn" id="btnGetCfg" disabled>Get Config</button>
-      </div>
+        <div class="row" style="margin-bottom:8px;">
+          <div class="status">Status: <b id="statusText">Disconnected</b></div>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <button class="btn" id="btnConnect">Connect</button>
+          <button class="btn" id="btnDisconnect" disabled>Disconnect</button>
+          <button class="btn" id="btnGetCfg" disabled>Get Config</button>
+        </div>
       <p class="muted">接続できたら③へ。Get Config は自動でも動くけど、困った時に押せます。</p>
     </div>
   </section>
@@ -145,15 +185,27 @@
         <input id="attentionText" type="text" />
       </div>
 
-      <div class="row" style="margin-top:14px;">
-        <button class="btn" id="btnWriteSave" disabled>書き込み（保存）</button>
-        <button class="btn" id="btnWriteReboot" disabled>Reboot</button>
+      <div class="actions3" style="margin-top:14px;">
+        <!-- 目立たせる主導線（左） -->
+        <div class="left">
+          <button class="btn btn-emph" id="btnWriteSaveReboot" disabled>保存してReboot</button>
+          <span class="muted" id="rebootHint"></span>
+        </div>
+
+        <!-- 任意操作（右） -->
+        <div class="right">
+          <button class="btn" id="btnWriteSave" disabled>書き込み（保存）</button>
+          <button class="btn" id="btnWriteReboot" disabled>Reboot</button>
           <button class="btn" id="btnAzTest" disabled>Azureキーをテスト</button>
-        <label class="muted" style="margin-left:auto;">
-          <input type="checkbox" id="chkShowSecrets" /> Show secrets
-        </label>
+
+          <label class="muted" style="margin-left:6px;">
+            <input type="checkbox" id="chkShowSecrets" /> Show secrets
+          </label>
+        </div>
       </div>
-        <div class="muted" style="margin-top:6px;">保存したら <b>Reboot</b> を押して再起動してね。</div>
+
+      <div class="muted" style="margin-top:6px;">保存したら <b>Reboot</b> を押して再起動してね。</div>
+
 
       <div class="hint" id="resultText" style="margin-top:8px;">未接続</div>
     </div>
@@ -204,7 +256,16 @@ const wizard = {
   connected: false,
   cfgLoaded: false,
   lastCfg: null,
+
+  // Save→Reboot 導線用
+  saveDone: false,           // @OK SAVE を受けたら true
+  rebootAfterSave: false,    // 「保存してReboot」用の一時フラグ
+
+  // 「保存してReboot」経由で Save が呼ばれたことを示す
+  armedSaveReboot: false,
 };
+
+
 
 
     const append = (preId, s) => {
@@ -258,6 +319,8 @@ const wizard = {
       $("btnConnect").disabled = wizard.connected;
       $("btnGetCfg").disabled = !wizard.connected;
       $("btnWriteSave").disabled = !wizard.connected;
+      $("btnWriteSaveReboot").disabled = !wizard.connected;
+      $("btnWriteReboot").disabled = !wizard.connected || !wizard.saveDone;
       $("btnAzTest").disabled = !wizard.connected;
       $("btnGetInfo").disabled = !wizard.connected;
       $("btnSend").disabled = !wizard.connected;
@@ -271,6 +334,7 @@ const wizard = {
       if (!wizard.connected) {
         $("statusText").textContent = "Disconnected";
         $("resultText").textContent = wizard.installDone ? "② Connect を押してね" : "①のINSTALLを先に実行してね";
+        setRebootNudge(false);
       }
     };
 
@@ -321,6 +385,12 @@ const wizard = {
     let reader = null;
     let writer = null;
 
+    // readLoop 停止制御
+    let readLoopTask = null;
+    let closing = false;
+    let disconnecting = false;
+
+
     async function writeLine(cmd, logText = cmd) {
       if (!writer) return;
       logSetup(">> " + logText);
@@ -330,122 +400,178 @@ const wizard = {
     }
 
     async function disconnectInternal(reason = "") {
+      if (disconnecting) return;
+      disconnecting = true;
+
       if (reason) logSetup(reason);
-      try { await reader?.cancel(); } catch {}
-      reader = null;
-      try { writer?.releaseLock(); } catch {}
-      writer = null;
-      try { await port?.close(); } catch {}
-      port = null;
+
+      // いまのポート/reader を退避
+      const p = port;
+      const r = reader;
+
+      // readLoop 停止合図（先に立てるのが重要）
+      closing = true;
+
+      // UIは先に「切断扱い」にしてOK（固まり感が減る）
       wizard.connected = false;
+      wizard.saveDone = false;
+      wizard.rebootAfterSave = false;
+      setRebootNudge(false);
       wizard.cfgLoaded = false;
       $("statusText").textContent = "Disconnected";
       $("devInfo").textContent = "USB: -";
       applyWizardUi();
+
+      // 以降、実体の切断
+      try { await r?.cancel(); } catch {}
+      try { r?.releaseLock(); } catch {}
+      reader = null;
+
+      try { writer?.releaseLock(); } catch {}
+      writer = null;
+
+      // readLoop が終わるのを少し待つ（無限待ち防止でタイムアウト）
+      try {
+        await Promise.race([
+          readLoopTask ?? Promise.resolve(),
+          new Promise((res) => setTimeout(res, 500)),
+        ]);
+      } catch {}
+
+      readLoopTask = null;
+
+      try { await p?.close(); } catch {}
+      port = null;
+
+      closing = false;
+      disconnecting = false;
     }
 
-    async function readLoop() {
+
+    async function readLoop(p) {
       const decoder = new TextDecoder();
       let buf = "";
 
-      while (port && port.readable) {
-        reader = port.readable.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
+      if (!p?.readable) return;
 
-            let idx;
-            while ((idx = buf.indexOf("\n")) >= 0) {
-              const line = buf.slice(0, idx).replace(/\r$/, "");
-              buf = buf.slice(idx + 1);
-              if (!line) continue;
+      const localReader = p.readable.getReader();
+      reader = localReader;
 
-              if (line.startsWith("@")) logSetup("<< " + line);
-              logRaw("<< " + line);
+      try {
+        while (!closing) {
+          const { value, done } = await localReader.read();
+          if (done) break;
+          if (!value) continue;
 
-              if (line.startsWith("@INFO ")) {
-                const jsonText = line.slice("@INFO ".length).trim();
-                try {
-                  const obj = JSON.parse(jsonText);
-                  $("infoText").textContent = `app=${obj.app ?? "?"}  ver=${obj.ver ?? "?"}`;
-                } catch {
-                  $("infoText").textContent = jsonText;
-                }
+          buf += decoder.decode(value, { stream: true });
+
+          let idx;
+          while ((idx = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, idx).replace(/\r$/, "");
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+
+            if (line.startsWith("@")) logSetup("<< " + line);
+            logRaw("<< " + line);
+
+            if (line.startsWith("@INFO ")) {
+              const jsonText = line.slice("@INFO ".length).trim();
+              try {
+                const obj = JSON.parse(jsonText);
+                $("infoText").textContent = `app=${obj.app ?? "?"}  ver=${obj.ver ?? "?"}`;
+              } catch {
+                $("infoText").textContent = jsonText;
               }
+            }
 
-              if (line.startsWith("@CFG ")) {
-                const jsonText = line.slice("@CFG ".length).trim();
-                try {
-                  const cfg = JSON.parse(jsonText);
-                  wizard.lastCfg = cfg;
-                  wizard.cfgLoaded = true;
+            if (line.startsWith("@CFG ")) {
+              const jsonText = line.slice("@CFG ".length).trim();
+              try {
+                const cfg = JSON.parse(jsonText);
+                wizard.lastCfg = cfg;
+                wizard.cfgLoaded = true;
 
-                  // Fill fields (keep defaults if empty)
-                  $("wifiSsid").value = cfg.wifi_ssid ?? "";
-                  $("ducoUser").value = cfg.duco_user ?? "";
-                  $("azRegion").value = cfg.az_region ?? "";
+                // Fill fields (keep defaults if empty)
+                $("wifiSsid").value = cfg.wifi_ssid ?? "";
+                $("ducoUser").value = cfg.duco_user ?? "";
+                $("azRegion").value = cfg.az_region ?? "";
 
-                  const v = String(cfg.az_voice ?? "").trim();
-                  $("azVoice").value = v.length ? v : DEFAULTS.azVoice;
+                const v = String(cfg.az_voice ?? "").trim();
+                $("azVoice").value = v.length ? v : DEFAULTS.azVoice;
 
-                  $("azEndpoint").value = cfg.az_endpoint ?? "";
+                $("azEndpoint").value = cfg.az_endpoint ?? "";
 
-                  const ds = (cfg.display_sleep_s ?? "");
-                  $("displaySleepS").value = (ds === "" || ds === null || ds === undefined) ? DEFAULTS.displaySleepS : ds;
+                const ds = (cfg.display_sleep_s ?? "");
+                $("displaySleepS").value = (ds === "" || ds === null || ds === undefined) ? DEFAULTS.displaySleepS : ds;
 
-                  const at = String(cfg.attention_text ?? "").trim();
-                  $("attentionText").value = at.length ? at : DEFAULTS.attentionText;
+                const at = String(cfg.attention_text ?? "").trim();
+                $("attentionText").value = at.length ? at : DEFAULTS.attentionText;
 
-                  const vol = (cfg.spk_volume ?? cfg.speaker_volume ?? cfg.volume ?? "");
-                  $("spkVolume").value = (vol === "" || vol === null || vol === undefined) ? DEFAULTS.spkVolume : vol;
+                const vol = (cfg.spk_volume ?? cfg.speaker_volume ?? cfg.volume ?? "");
+                $("spkVolume").value = (vol === "" || vol === null || vol === undefined) ? DEFAULTS.spkVolume : vol;
 
-                  // secrets: clear input + show set state
-                  $("wifiPass").value = "";
-                  $("ducoKey").value = "";
-                  $("azKey").value = "";
+                // secrets: clear input + show set state
+                $("wifiPass").value = "";
+                $("ducoKey").value = "";
+                $("azKey").value = "";
 
-                  $("wifiPassHint").textContent = cfg.wifi_pass_set ? "(set)" : "(not set)";
-                  $("ducoKeyHint").textContent = cfg.duco_key_set ? "(set)" : "(not set)";
-                  $("azKeyHint").textContent = cfg.az_key_set ? "(set)" : "(not set)";
+                $("wifiPassHint").textContent = cfg.wifi_pass_set ? "(set)" : "(not set)";
+                $("ducoKeyHint").textContent = cfg.duco_key_set ? "(set)" : "(not set)";
+                $("azKeyHint").textContent = cfg.az_key_set ? "(set)" : "(not set)";
 
-                  $("resultText").textContent = "Config loaded.";
-                  refreshModeUi();
-                } catch {
-                  $("resultText").textContent = "Config loaded (raw).";
-                }
+                $("resultText").textContent = "Config loaded.";
+                refreshModeUi();
+              } catch {
+                $("resultText").textContent = "Config loaded (raw).";
               }
+            }
 
               if (line.startsWith("@OK ")) {
                 const msg = line.slice("@OK ".length).trim();
-                if (msg === "SAVE") {
-              try { $("btnWriteReboot").disabled = false; } catch {}
 
-                  $("resultText").textContent = "書き込みました！";
+                if (msg === "SAVE") {
+                  wizard.saveDone = true;
+                  try { $("btnWriteReboot").disabled = false; } catch {}
+
+                  $("resultText").textContent = "保存しました！つぎに Reboot してね。";
+                  setRebootNudge(true, "Saved ✓ → Reboot を押してね");
+
+                  // 「保存してReboot」だった場合はここで自動Reboot
+                  if (wizard.rebootAfterSave) {
+                    wizard.rebootAfterSave = false;
+                    $("resultText").textContent = "保存しました。再起動します…";
+                    try { await writeLine("REBOOT"); } catch {}
+                    setRebootNudge(false);
+                  }
+                } else if (msg === "REBOOT") {
+                  $("resultText").textContent = "再起動中…";
+                  wizard.saveDone = false;
+                  setRebootNudge(false);
                 } else {
                   $("resultText").textContent = msg;
                 }
               }
-              if (line.startsWith("@ERR ")) {
-                $("resultText").textContent = "ERROR: " + line.slice("@ERR ".length).trim();
-              }
 
-              if (line.startsWith("@AZTEST ")) {
-                const msg = line.slice("@AZTEST ".length).trim();
-                if (msg === "OK") $("resultText").textContent = "Azureキー: 使えます ✅";
-                else $("resultText").textContent = "Azureキー: 使えません ❌ (" + msg + ")";
-              }
+
+            if (line.startsWith("@ERR ")) {
+              $("resultText").textContent = "ERROR: " + line.slice("@ERR ".length).trim();
+            }
+
+            if (line.startsWith("@AZTEST ")) {
+              const msg = line.slice("@AZTEST ".length).trim();
+              if (msg === "OK") $("resultText").textContent = "Azureキー: 使えます ✅";
+              else $("resultText").textContent = "Azureキー: 使えません ❌ (" + msg + ")";
             }
           }
-        } catch (e) {
-          logSetup("Read stopped: " + e);
-        } finally {
-          try { reader.releaseLock(); } catch {}
-          reader = null;
         }
+      } catch (e) {
+        logSetup("Read stopped: " + e);
+      } finally {
+        try { localReader.releaseLock(); } catch {}
+        if (reader === localReader) reader = null;
       }
     }
+
 
     // --- Connect / Get Config ---
     $("btnConnect").onclick = async () => {
@@ -461,13 +587,18 @@ const wizard = {
         writer = port.writable.getWriter();
 
         wizard.connected = true;
+        wizard.saveDone = false;
+        wizard.rebootAfterSave = false;
+        setRebootNudge(false);
         wizard.installDone = true; // If you can connect, firmware is there.
 
         $("statusText").textContent = "Connected";
         showPortInfo(port);
 
         applyWizardUi();
-        readLoop(); // no await
+        closing = false;
+        readLoopTask = readLoop(port); // no await
+
 
         // auto GET CFG
         setTimeout(() => { try { $("btnGetCfg").click(); } catch {} }, 200);
@@ -525,6 +656,17 @@ const wizard = {
     // --- Write & Save ---
     const dirty = { wifi_pass: false, duco_key: false, az_key: false };
 
+    function setRebootNudge(on, text = "") {
+      const hint = $("rebootHint");
+      if (hint) {
+        hint.textContent = on ? (text || "保存しました → Rebootしてね") : "";
+        hint.style.color = on ? "#b00" : "";
+        hint.style.fontWeight = on ? "700" : "";
+      }
+      const b = $("btnWriteReboot");
+      if (b) b.classList.toggle("pulse", !!on);
+    }
+
     const flashHint = (id, text, revertText, ms = 3500) => {
       const el = $(id);
       if (!el) return;
@@ -542,7 +684,19 @@ const wizard = {
     }
 
     $("btnWriteSave").onclick = async () => {
+        wizard.saveDone = false;
+
+        // 通常の「保存」では自動Rebootを無効化。
+        // 「保存してReboot」から来た時だけ rebootAfterSave を維持する。
+        if (!wizard.armedSaveReboot) {
+          wizard.rebootAfterSave = false;
+        }
+        wizard.armedSaveReboot = false;
+
+        setRebootNudge(false);
+        try { $("btnWriteReboot").disabled = true; } catch {}
       try {
+
         $("resultText").textContent = "書き込み中...";
         const ok = await ensureCfgLoaded();
         if (!ok) {
@@ -664,6 +818,15 @@ const wizard = {
       }
     };
 
+    $("btnWriteSaveReboot").onclick = async () => {
+      // SAVE が @OK になったら readLoop 側で REBOOT を送る
+      wizard.rebootAfterSave = true;
+      wizard.armedSaveReboot = true; // ← これが重要
+      $("btnWriteSave").click();
+    };
+
+
+    
   $("btnWriteReboot").onclick = async () => {
     try {
       $("resultText").textContent = "再起動中...";
