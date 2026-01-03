@@ -138,6 +138,9 @@
         <label for="displaySleepS">Display sleep (sec)</label>
         <input id="displaySleepS" type="number" min="0" step="1" />
 
+        <label for="spkVolume">Volume (0-255)</label>
+        <input id="spkVolume" type="number" min="0" max="255" step="1" />
+
         <label for="attentionText">Attention text</label>
         <input id="attentionText" type="text" />
       </div>
@@ -188,7 +191,9 @@
       azVoice: "ja-JP-AoiNeural",
       displaySleepS: 600,
       attentionText: "こんにちは",
+      spkVolume: 160, // 0-255
     };
+
 
 // --- wizard state (session-only) ---
 // installDone は localStorage に保存しません。
@@ -393,6 +398,9 @@ const wizard = {
                   const at = String(cfg.attention_text ?? "").trim();
                   $("attentionText").value = at.length ? at : DEFAULTS.attentionText;
 
+                  const vol = (cfg.spk_volume ?? cfg.speaker_volume ?? cfg.volume ?? "");
+                  $("spkVolume").value = (vol === "" || vol === null || vol === undefined) ? DEFAULTS.spkVolume : vol;
+
                   // secrets: clear input + show set state
                   $("wifiPass").value = "";
                   $("ducoKey").value = "";
@@ -555,9 +563,10 @@ const wizard = {
         const azKey = String($("azKey").value ?? "");
         const displaySleepS = String($("displaySleepS").value ?? "").trim();
         const attentionText = String($("attentionText").value ?? "").trim();
+        const spkVolume = String($("spkVolume").value ?? "").trim();
 
         const hasNL = (s) => /[\r\n]/.test(s);
-        if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azEndpoint, azKey, displaySleepS, attentionText].some(hasNL)) {
+        if ([ssid, pass, ducoUser, ducoKey, azRegion, azVoice, azEndpoint, azKey, displaySleepS, attentionText, spkVolume].some(hasNL)) {
           $("resultText").textContent = "ERROR: 改行は使えません";
           return;
         }
@@ -591,6 +600,19 @@ const wizard = {
           if (!same(String(sec), cfg.display_sleep_s)) {
             await writeLine(`SET display_sleep_s ${sec}`);
             cfg.display_sleep_s = sec;
+            sent++;
+          }
+        }
+
+        if (spkVolume.length) {
+          const v = parseInt(spkVolume, 10);
+          if (!Number.isFinite(v) || v < 0 || v > 255) {
+            $("resultText").textContent = "ERROR: Volume は 0〜255 の整数";
+            return;
+          }
+          if (!same(String(v), cfg.spk_volume)) {
+            await writeLine(`SET spk_volume ${v}`);
+            cfg.spk_volume = v;
             sent++;
           }
         }
@@ -730,6 +752,7 @@ const wizard = {
     $("azVoice").value = DEFAULTS.azVoice;
     $("displaySleepS").value = DEFAULTS.displaySleepS;
     $("attentionText").value = DEFAULTS.attentionText;
+    $("spkVolume").value = DEFAULTS.spkVolume;
 
     $("installStatus").textContent = "未インストール";
     observeEwtDialogs();
